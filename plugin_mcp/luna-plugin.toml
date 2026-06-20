@@ -1,0 +1,105 @@
+name = "plugin-mcp"
+version = "0.1.0"
+description = "Universal MCP (Model Context Protocol) tool adapter."
+entry = "plugin_mcp"
+sdk_version = "0"
+license = "MIT"
+category = "connectors"
+default_enabled = true
+db_tables = ["plugin_mcp_servers", "plugin_mcp_tools"]
+tags = ["mcp", "tools", "integrations", "connector"]
+readme = """
+# plugin-mcp
+
+Connect Luna to **any Model Context Protocol server**. Discovered tools are
+wrapped into Luna's tool registry as `mcp__<server>__<tool>` and registered
+**dynamically at runtime** — enable a server and its tools come online; disable
+it and they're gone. Servers are disabled by default (the runtime safety gate).
+
+Manage servers in **Settings → MCP Servers** (a themed iframe served from the
+plugin): add, test, enable/disable, edit env, inspect tools. For secrets, set an
+env value to `vault:<name>` so the key is resolved server-side via the vault and
+never stored in plaintext.
+
+Built on `luna_sdk` v0 — no `import luna.*`:
+- **E4** plugin-owned tables (`declarative_base`, isolated metadata).
+- **E4.1** `ToolHandler` / `ToolRegistry` for the dynamic wrapped-tool registration.
+- **E7** `ctx.record_version` so server changes show in core's version/rollback log.
+- routes auth via `luna_sdk.get_current_user`; secrets via `ctx.vault`.
+
+> Needs Node on the host to spawn stdio servers (`npx`/`node`); the luna-service
+> image ships Node 22.
+
+Source: https://github.com/huemorgan2/plugin-mcp
+"""
+
+[requires]
+tools = 11
+tables = 2
+depends_on = ["plugin-vault"]
+
+[[tools]]
+name = "mcp_list_servers"
+description = "List configured MCP servers and their status."
+policy = "auto_approve"
+risk_level = "low"
+
+[[tools]]
+name = "mcp_list_tools"
+description = "List the tools exposed by a specific MCP server."
+policy = "auto_approve"
+risk_level = "low"
+
+[[tools]]
+name = "mcp_call_tool"
+description = "Call an MCP tool by server + tool name."
+policy = "auto_approve"
+risk_level = "medium"
+
+[[tools]]
+name = "mcp_refresh"
+description = "Re-discover tools on an enabled MCP server."
+policy = "auto_approve"
+risk_level = "low"
+
+[[tools]]
+name = "mcp_add_server"
+description = "Add a new MCP server (disabled by default)."
+policy = "auto_approve"
+risk_level = "medium"
+
+[[tools]]
+name = "mcp_test_server_config"
+description = "Dry-run an MCP stdio server config without persisting it."
+policy = "auto_approve"
+risk_level = "low"
+
+[[tools]]
+name = "mcp_update_server"
+description = "Update an existing MCP server's config (command/args/env)."
+policy = "auto_approve"
+risk_level = "medium"
+
+[[tools]]
+name = "mcp_enable_server"
+description = "Enable a server: connect, discover tools, register them."
+policy = "auto_approve"
+risk_level = "medium"
+
+[[tools]]
+name = "mcp_disable_server"
+description = "Disable a server: disconnect and unregister its tools."
+policy = "auto_approve"
+risk_level = "low"
+
+[[tools]]
+name = "mcp_remove_server"
+description = "Remove a server entirely (config + tools deleted)."
+policy = "auto_approve"
+risk_level = "medium"
+
+[[tools]]
+name = "mcp_get_server_status"
+description = "Get detailed status of an MCP server (or all servers)."
+policy = "auto_approve"
+risk_level = "low"
