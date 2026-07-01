@@ -24,9 +24,10 @@ log = logging.getLogger("plugin-mcp")
 class MCPPlugin(LunaPlugin):
     manifest = PluginManifest(
         name="plugin-mcp",
+        shown_name="MCP",
         icon="share-2",
         image="assets/icon.png",
-        version="0.1.1",
+        version="0.1.2",
         description="Universal MCP (Model Context Protocol) tool adapter.",
         category="connectors",
         system_app=False,
