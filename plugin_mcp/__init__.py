@@ -27,7 +27,7 @@ class MCPPlugin(LunaPlugin):
         shown_name="MCP",
         icon="share-2",
         image="assets/icon.png",
-        version="0.1.2",
+        version="0.1.3",
         description="Universal MCP (Model Context Protocol) tool adapter.",
         category="connectors",
         system_app=False,
