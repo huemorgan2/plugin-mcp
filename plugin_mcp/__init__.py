@@ -14,6 +14,11 @@ from typing import Any
 
 from luna_sdk import LunaPlugin, PluginContext, PluginManifest, SettingsTab, ToolDef
 
+try:  # cores with the skill system (006.0) export it
+    from luna_sdk import SkillDef
+except ImportError:  # pragma: no cover - older core: tools register ungated
+    SkillDef = None
+
 from . import state
 from .manager import MCPManagerError, ServerManager
 from .models import MCPServerRow, MCPToolRow
@@ -27,7 +32,7 @@ class MCPPlugin(LunaPlugin):
         shown_name="MCP",
         icon="share-2",
         image="assets/icon.png",
-        version="0.1.3",
+        version="0.2.0",
         description="Universal MCP (Model Context Protocol) tool adapter.",
         category="connectors",
         system_app=False,
@@ -50,6 +55,7 @@ class MCPPlugin(LunaPlugin):
 
     def __init__(self) -> None:
         self._manager: ServerManager | None = None
+        self._ctx: PluginContext | None = None
 
     @property
     def manager(self) -> ServerManager:
@@ -64,6 +70,7 @@ class MCPPlugin(LunaPlugin):
             await conn.run_sync(MCPServerRow.__table__.create, checkfirst=True)
             await conn.run_sync(MCPToolRow.__table__.create, checkfirst=True)
 
+        self._ctx = ctx
         self._manager = ServerManager(ctx)
         # Expose the manager to the routes via the module singleton (decoupled
         # from the core plugin registry).
@@ -89,7 +96,15 @@ class MCPPlugin(LunaPlugin):
     async def on_unload(self) -> None:
         if self._manager is not None:
             await self._manager.shutdown()
+        # 0.2.0: drop the mcp-admin skill with the tools it unlocks.
+        skill_reg = getattr(self._ctx, "skill_registry", None)
+        if skill_reg is not None:
+            try:
+                skill_reg.unregister_plugin("plugin-mcp")
+            except Exception as e:  # noqa: BLE001
+                log.warning("mcp skill unregister failed: %s", e)
         self._manager = None
+        self._ctx = None
         state.set_manager(None)
 
     async def prompt_sections(self) -> list[str]:
@@ -106,8 +121,11 @@ class MCPPlugin(LunaPlugin):
 
         lines = [
             "## MCP servers (enabled)",
-            "Tools from these are available as `mcp__<server>__<tool>`. Check "
-            "here and the connected apps above before adding a new integration.",
+            "Each server's tools (`mcp__<server>__<tool>`) are behind its "
+            "`mcp-<server>` skill — load the skill and the tools unlock on "
+            "your next turn. Server management tools are behind the "
+            "`mcp-admin` skill. Check here and the connected apps above "
+            "before adding a new integration.",
             "",
         ]
         for s in servers:
@@ -125,6 +143,21 @@ class MCPPlugin(LunaPlugin):
 
     def _register_builtins(self, ctx: PluginContext) -> None:
         mgr = self.manager
+
+        # 0.2.0: the 11 management tools ride behind the `mcp-admin` skill —
+        # server administration is rare, and 11 schemas in every turn's
+        # prompt is pure flooding. Cores without a skill registry get the
+        # tools ungated (degrade, never hide).
+        _gate = getattr(ctx, "skill_registry", None) is not None and SkillDef is not None
+
+        def _register(plugin: str, defn: ToolDef, handler: Any) -> None:
+            if _gate:
+                try:
+                    ctx.tool_registry.register(plugin, defn, handler, skill_gated=True)
+                    return
+                except TypeError:  # core knows skills but not the kwarg
+                    pass
+            ctx.tool_registry.register(plugin, defn, handler)
 
         async def _list_servers() -> dict[str, Any]:
             return {"servers": await mgr.list_servers()}
@@ -153,7 +186,7 @@ class MCPPlugin(LunaPlugin):
                 return {"error": str(e)}
             return {"ok": True, "tool_count": status.get("tool_count", 0)}
 
-        ctx.tool_registry.register(
+        _register(
             "plugin-mcp",
             ToolDef(
                 name="mcp_list_servers",
@@ -167,7 +200,7 @@ class MCPPlugin(LunaPlugin):
             _list_servers,
         )
 
-        ctx.tool_registry.register(
+        _register(
             "plugin-mcp",
             ToolDef(
                 name="mcp_list_tools",
@@ -187,7 +220,7 @@ class MCPPlugin(LunaPlugin):
             _list_tools,
         )
 
-        ctx.tool_registry.register(
+        _register(
             "plugin-mcp",
             ToolDef(
                 name="mcp_call_tool",
@@ -209,7 +242,7 @@ class MCPPlugin(LunaPlugin):
             _call_tool,
         )
 
-        ctx.tool_registry.register(
+        _register(
             "plugin-mcp",
             ToolDef(
                 name="mcp_refresh",
@@ -384,7 +417,7 @@ class MCPPlugin(LunaPlugin):
                     return {"error": str(e)}
             return {"servers": await mgr.list_servers()}
 
-        ctx.tool_registry.register(
+        _register(
             "plugin-mcp",
             ToolDef(
                 name="mcp_add_server",
@@ -420,7 +453,7 @@ class MCPPlugin(LunaPlugin):
             _add_server,
         )
 
-        ctx.tool_registry.register(
+        _register(
             "plugin-mcp",
             ToolDef(
                 name="mcp_test_server_config",
@@ -443,7 +476,7 @@ class MCPPlugin(LunaPlugin):
             _test_config,
         )
 
-        ctx.tool_registry.register(
+        _register(
             "plugin-mcp",
             ToolDef(
                 name="mcp_update_server",
@@ -475,7 +508,7 @@ class MCPPlugin(LunaPlugin):
             _update_server,
         )
 
-        ctx.tool_registry.register(
+        _register(
             "plugin-mcp",
             ToolDef(
                 name="mcp_enable_server",
@@ -497,7 +530,7 @@ class MCPPlugin(LunaPlugin):
             _enable_server,
         )
 
-        ctx.tool_registry.register(
+        _register(
             "plugin-mcp",
             ToolDef(
                 name="mcp_disable_server",
@@ -516,7 +549,7 @@ class MCPPlugin(LunaPlugin):
             _disable_server,
         )
 
-        ctx.tool_registry.register(
+        _register(
             "plugin-mcp",
             ToolDef(
                 name="mcp_remove_server",
@@ -535,7 +568,7 @@ class MCPPlugin(LunaPlugin):
             _remove_server,
         )
 
-        ctx.tool_registry.register(
+        _register(
             "plugin-mcp",
             ToolDef(
                 name="mcp_get_server_status",
@@ -554,6 +587,54 @@ class MCPPlugin(LunaPlugin):
             ),
             _get_server_status,
         )
+
+        if _gate:
+            try:
+                ctx.skill_registry.unregister_plugin("plugin-mcp")
+            except Exception:  # noqa: BLE001 - stale sweep is best-effort
+                pass
+            ctx.skill_registry.register(
+                "plugin-mcp",
+                SkillDef(
+                    name="mcp-admin",
+                    description=(
+                        "Manage MCP servers — add, test, enable, disable, "
+                        "remove, refresh, diagnose, list their tools, or call "
+                        "an MCP tool directly. Load BEFORE any MCP server "
+                        "work; the tools unlock on your next turn."
+                    ),
+                    body=(
+                        "You now have the MCP server management tools. They "
+                        "unlock on your NEXT turn after loading this skill.\n\n"
+                        "Discovery: mcp_list_servers (all servers + status), "
+                        "mcp_list_tools (one server's tools), "
+                        "mcp_get_server_status (diagnose via last_error).\n"
+                        "Lifecycle: mcp_add_server (starts disabled), "
+                        "mcp_test_server_config (dry-run before persisting), "
+                        "mcp_update_server, mcp_enable_server, "
+                        "mcp_disable_server, mcp_remove_server, mcp_refresh "
+                        "(re-discover tools).\n"
+                        "Escape hatch: mcp_call_tool calls any tool on a "
+                        "connected server by name.\n\n"
+                        "Each ENABLED server also has its own `mcp-<server>` "
+                        "skill that unlocks its wrapped `mcp__<server>__<tool>` "
+                        "tools — load that one to actually use a server."
+                    ),
+                    tools=[
+                        "mcp_list_servers",
+                        "mcp_list_tools",
+                        "mcp_call_tool",
+                        "mcp_refresh",
+                        "mcp_add_server",
+                        "mcp_test_server_config",
+                        "mcp_update_server",
+                        "mcp_enable_server",
+                        "mcp_disable_server",
+                        "mcp_remove_server",
+                        "mcp_get_server_status",
+                    ],
+                ),
+            )
 
 
 __all__ = ["MCPPlugin", "ServerManager", "MCPManagerError"]

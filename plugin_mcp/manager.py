@@ -22,6 +22,11 @@ from sqlalchemy import delete, select
 
 from luna_sdk import PluginContext, ToolRegistry
 
+try:  # cores with the skill system (006.0) export it
+    from luna_sdk import SkillDef
+except ImportError:  # pragma: no cover - older core: tools register ungated
+    SkillDef = None
+
 from .client import MCPClient, StdioConfig
 from .models import MCPServerRow, MCPToolRow
 from .wrapper import build_wrapped_tool, plugin_owner_name
@@ -31,6 +36,14 @@ log = logging.getLogger("plugin-mcp.manager")
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+def _skill_slug(server_name: str) -> str:
+    """Kebab-case a server name for use in its skill name."""
+    slug = "".join(c if c.isalnum() else "-" for c in server_name.lower())
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug.strip("-") or "server"
 
 
 class MCPManagerError(Exception):
@@ -51,6 +64,11 @@ class ServerManager:
     @property
     def tool_registry(self) -> ToolRegistry:
         return self._ctx.tool_registry
+
+    @property
+    def skill_registry(self) -> Any | None:
+        """The core's skill registry, or None on cores without skills."""
+        return getattr(self._ctx, "skill_registry", None)
 
     def client_for(self, name: str) -> MCPClient | None:
         return self._clients.get(name)
@@ -446,10 +464,23 @@ class ServerManager:
         def _getter(name: str = server_name):
             return self._clients.get(name)
 
+        # 0.2.0: wrapped tools ride behind a per-server skill (`mcp-<server>`)
+        # so a chatty MCP server can't flood every turn's prompt with tool
+        # schemas. Cores without a skill registry get them ungated.
+        gate = self.skill_registry is not None and SkillDef is not None
+        registered: list[str] = []
         for tool in tools:
             try:
                 defn, handler = build_wrapped_tool(server_name, tool, _getter)
-                self.tool_registry.register(owner, defn, handler)
+                if gate:
+                    try:
+                        self.tool_registry.register(owner, defn, handler, skill_gated=True)
+                    except TypeError:  # core knows skills but not the kwarg
+                        gate = False
+                        self.tool_registry.register(owner, defn, handler)
+                else:
+                    self.tool_registry.register(owner, defn, handler)
+                registered.append(defn.name)
             except ValueError as e:
                 # Name collision with another tool — log and skip.
                 log.warning(
@@ -458,7 +489,43 @@ class ServerManager:
                     tool.get("name"),
                     e,
                 )
+        self._sync_skill(server_name, owner, registered if gate else [])
+
+    def _sync_skill(self, server_name: str, owner: str, tool_names: list[str]) -> None:
+        """Keep the per-server skill in step with the wrapped tools. An empty
+        tool_names drops the skill (server disabled/removed, or tools ungated)."""
+        reg = self.skill_registry
+        if reg is None or SkillDef is None:
+            return
+        try:
+            reg.unregister_plugin(owner)
+            if not tool_names:
+                return
+            reg.register(
+                owner,
+                SkillDef(
+                    name=f"mcp-{_skill_slug(server_name)}",
+                    description=(
+                        f"Tools from the '{server_name}' MCP server "
+                        f"({len(tool_names)} tools). Load BEFORE using them; "
+                        "they unlock on your next turn."
+                    ),
+                    body=(
+                        f"You now have access to the '{server_name}' MCP "
+                        "server's tools (they unlock on your NEXT turn after "
+                        "loading this skill): "
+                        + ", ".join(tool_names)
+                        + ". Call each tool with the arguments its schema "
+                        "shows. mcp_get_server_status (mcp-admin skill) "
+                        "diagnoses connection problems."
+                    ),
+                    tools=list(tool_names),
+                ),
+            )
+        except Exception as e:  # noqa: BLE001 - skills must never break tools
+            log.warning("mcp skill sync failed (server=%s): %s", server_name, e)
 
     def _unregister_tools(self, server_name: str) -> None:
         owner = plugin_owner_name(server_name)
         self.tool_registry.unregister_plugin(owner)
+        self._sync_skill(server_name, owner, [])
